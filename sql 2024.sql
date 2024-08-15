@@ -1,6 +1,7 @@
---create database
+--Creating database
 CREATE DATABASE nsbm_green_university;
---creating tables
+--Creating tables
+--Creating student table(main table)
 CREATE TABLE Student(
   student_id VARCHAR(10) PRIMARY KEY,
   nic varchar(15) NOT NULL,
@@ -15,16 +16,15 @@ CREATE TABLE Student(
   faculty_id VARCHAR(10),
   result_id VARCHAR(10),
 );
+--Creating Coursework table
 CREATE TABLE Coursework(
   coursework_id VARCHAR(10),
   module_id VARCHAR(10),
   coursework_name varchar(20),
   submission_date date,
+  result INT,
   PRIMARY KEY (coursework_id)
   );
-
-ALTER TABLE Coursework
-ADD result INT;
 
   CREATE TABLE Exam(
   exam_id varchar(10),
@@ -193,7 +193,7 @@ BEGIN
     ELSE
         SELECT 'Foreign key already exists' AS Result;
 END;
---executinf foreign key procedure
+--executing foreign key procedure
 EXEC foreignkey 
     @ctn = 'Student', 
     @ccn =  'registration_id',
@@ -325,11 +325,11 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    UPDATE result
-    SET total = COALESCE(total, 0) + ISNULL(i.result, 0)
-    FROM result
-    INNER JOIN inserted i ON result.exam_id = i.exam_id
-    WHERE result.result_id IN (SELECT result_id FROM inserted);
+    UPDATE r
+    SET r.total = COALESCE(r.total, 0) + ISNULL(i.result, 0)
+    FROM result r
+    JOIN inserted i ON r.exam_id = i.exam_id
+    WHERE r.result_id = i.result_id;
 END;
 
 CREATE TRIGGER trg_course
@@ -340,10 +340,16 @@ BEGIN
     SET NOCOUNT ON;
 
     UPDATE result
-    SET total = COALESCE(total, 0) + ISNULL(i.result, 0)
-    FROM result
-    INNER JOIN inserted i ON result.coursework_id = i.coursework_id
-    WHERE result.result_id IN (SELECT result_id FROM inserted);
+    SET total = COALESCE(total, 0) + (
+        SELECT COALESCE(i.result, 0)
+        FROM inserted i
+        WHERE i.coursework_id = result.coursework_id
+    )
+    WHERE EXISTS (
+        SELECT 1
+        FROM inserted i
+        WHERE i.coursework_id = result.coursework_id
+    );
 END;
 CREATE TRIGGER trg_Semester_fee
 ON Semester_fee
@@ -351,9 +357,15 @@ AFTER INSERT, UPDATE
 AS
 BEGIN
     SET NOCOUNT ON;
+
     UPDATE Semester_fee
     SET payment_method = 'Online'
-    WHERE payment_method IS NULL AND semester_fee_id IN (SELECT semester_fee_id FROM inserted);
+    WHERE payment_method IS NULL 
+    AND EXISTS (
+        SELECT 1
+        FROM inserted i
+        WHERE i.semester_fee_id = Semester_fee.semester_fee_id
+    );
 END;
 CREATE TRIGGER trg_UpdateSemesterDates
 ON Semester
@@ -361,21 +373,24 @@ AFTER UPDATE
 AS
 BEGIN
     SET NOCOUNT ON;
+
     UPDATE Semester
     SET finish_date = DATEADD(MONTH, 4, st_date)
-    WHERE semester_id IN (SELECT semester_id FROM inserted);
+    WHERE EXISTS (
+        SELECT 1
+        FROM inserted i
+        WHERE i.semester_id = Semester.semester_id
+    );
 END;
 --making functions
 CREATE FUNCTION dbo.total_students()
 RETURNS INT
 AS
 BEGIN
-    DECLARE @TotalStudents INT;
-
-    SELECT @TotalStudents = COUNT(student_id)
-    FROM Student;
-
-    RETURN @TotalStudents;
+    RETURN (
+        SELECT COUNT(student_id)
+        FROM Student
+    );
 END;
 DECLARE @Result INT = (SELECT dbo.total_students());
 
@@ -394,18 +409,15 @@ BEGIN
 
     RETURN;
 END;
-SELECT * FROM dbo.students_by_degree();
 CREATE FUNCTION dbo.employeecount(@employee_type VARCHAR(5))
 RETURNS INT
 AS
 BEGIN
-    DECLARE @EmployeeCount INT;
-
-    SELECT @EmployeeCount = COUNT(e.employee_id)
-    FROM Employee e
-    WHERE e.employee_type = @employee_type;
-
-    RETURN @EmployeeCount;
+    RETURN (
+        SELECT COUNT(e.employee_id)
+        FROM Employee e
+        WHERE e.employee_type = @employee_type
+    );
 END;
 --making database views
 CREATE VIEW student_result
@@ -413,7 +425,7 @@ AS
 SELECT
     s.student_id,
     s.name,
-    COALESCE(r.total, 0) AS result
+    ISNULL(r.total, 0) AS result
 FROM
     Student s
 LEFT JOIN
@@ -431,6 +443,7 @@ AS
 BEGIN
     DECLARE @lastpaid DATE;
 
+
     SELECT @lastpaid = MAX(Pdate)
     FROM Semester_fee
     WHERE semester_fee_id = (
@@ -440,9 +453,14 @@ BEGIN
         ORDER BY semester_fee_id DESC
     );
 
-    IF DATEDIFF(MONTH, @lastpaid, GETDATE()) > 6
+
+    IF @lastpaid IS NOT NULL AND DATEDIFF(MONTH, @lastpaid, GETDATE()) > 6
     BEGIN
         PRINT 'Unpaid';
+    END
+    ELSE
+    BEGIN
+        PRINT 'Paid or No Payment Records';
     END
 END;
 --database views
